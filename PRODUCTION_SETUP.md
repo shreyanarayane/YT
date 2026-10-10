@@ -62,10 +62,11 @@ the application and are not migrated automatically.
   `pip install -r backend/requirements.txt` and start with
   `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`. Set the Render health
   check path to `/health`.
-- **Vercel frontend:** set the project root directory to `frontend`. Build and
-  publish `build/web` with the Flutter SDK and these public build-time values:
-  `flutter build web --release --dart-define=API_BASE_URL=https://YOUR-RENDER-SERVICE.onrender.com --dart-define=SUPABASE_URL=https://YOUR-PROJECT.supabase.co --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR-PUBLISHABLE-KEY`.
-  Never pass the Supabase service-role key to the frontend build.
+- **Vercel frontend:** set the project root directory to `frontend`, framework
+  preset to Vite, install command to `npm ci`, build command to `npm run build`,
+  and output directory to `dist`. Add `API_BASE_URL` (your Render API URL),
+  `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` as Vercel project environment
+  variables. Never pass the Supabase service-role key to the frontend build.
 - Set `CORS_ALLOW_ORIGINS` on Render to the comma-separated Vercel site origins
   (for example, the production domain and any preview domain you intentionally
   allow). Production defaults to no browser origins when this is unset.
@@ -73,6 +74,7 @@ the application and are not migrated automatically.
   values as Render environment variables. Remove the bootstrap password after
   the first administrator is created.
 
-The API and video-generation engine are together under `backend/`; the Flutter
-web/mobile app is under `frontend/`. The root `.env` is only for local
-development and should not be committed or uploaded to Vercel.
+The API and video-generation engine are together under `backend/`; the React +
+Vite web app is under `frontend/` (legacy Flutter sources remain there but are
+not part of the Vercel build). The root `.env` is for local development only;
+configure Vercel environment variables in its project settings instead.

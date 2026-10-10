@@ -33,6 +33,12 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# React/Vite related
+/node_modules/
+/dist/
+.env.local
+.env.*.local
+
 # Symbolication related
 app.*.symbols
 

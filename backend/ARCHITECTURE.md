@@ -3,7 +3,7 @@
 ## Responsibility boundaries
 
 ```text
-Flutter web / desktop client
+React + Vite web client
   -> Supabase Auth: sign-up, sign-in, session refresh
   -> FastAPI API: authenticated application requests only
        -> Supabase Postgres: tenant data and audit records
@@ -11,7 +11,7 @@ Flutter web / desktop client
        -> Render worker: TTS, MoviePy/FFmpeg, Pexels, YouTube upload
 ```
 
-Flutter contains only the Supabase project URL and publishable key. It never
+The browser client contains only the Supabase project URL and publishable key. It never
 receives a database password, Supabase service key, Razorpay secret, Pexels
 key, Google OAuth refresh token, or YouTube client secret.
 
@@ -41,7 +41,7 @@ read or migrated automatically.
 
 ## Deployable services
 
-1. **Web**: Flutter web bundle behind HTTPS.
+1. **Web**: React + Vite static bundle behind HTTPS.
 2. **API**: FastAPI, stateless, with strict CORS and environment-only secrets.
 3. **Worker**: a separate Python worker/container for MoviePy/FFmpeg, TTS and
    scheduled YouTube publishing. Do not run long renders in an HTTP request.
@@ -50,7 +50,7 @@ read or migrated automatically.
 
 ## Migration order
 
-1. Supabase Auth is integrated with Flutter; FastAPI validates its access token.
+1. Supabase Auth is integrated with the browser client; FastAPI validates its access token.
 2. Supabase Postgres/PostgREST is the canonical database, with UUID ownership
    linked to `auth.users` and schema managed by the SQL migrations.
 3. Move generated media to private Supabase Storage with owner-specific access.
