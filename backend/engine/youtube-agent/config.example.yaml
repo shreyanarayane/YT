@@ -1,0 +1,24 @@
+# Copy this file to config.yaml and fill in your own values.
+
+channel:
+  name: "your-channel-name"
+  niche_seed_terms:        # what the agent searches Trends around
+    - "personal finance tips"
+    - "science facts"
+    - "productivity hacks"
+    - "history mysteries"
+
+pexels_api_key: "YOUR_PEXELS_FREE_API_KEY"
+
+video:
+  target_seconds: 50        # Shorts must be <= 60s
+  resolution: [1080, 1920]  # vertical, for Shorts
+  voice: "en-US-GuyNeural"  # any edge-tts voice; run `edge-tts --list-voices`
+
+upload:
+  default_privacy: "private"   # keep private until you manually flip it
+  category_id: "27"            # "Education" — change if your niche differs
+
+paths:
+  data_dir: "data"
+  output_dir: "output"

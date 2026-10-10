@@ -1,0 +1,23 @@
+# Runtime secrets and account credentials
+.env
+.env.*
+!.env.example
+**/.venv/
+backend/engine/youtube-agent/config.yaml
+backend/engine/youtube-agent/client_secret.json
+backend/engine/youtube-agent/token.json
+backend/engine/youtube-agent/token.invalid.json
+
+# Generated local state
+backend/engine/youtube-agent/data/*.db
+backend/engine/youtube-agent/output/
+__pycache__/
+*.py[cod]
+.dart_tool/
+build/
+
+# Generated test media
+/backend/engine/youtube-agent/test.mp3
+/backend/engine/youtube-agent/test_audio.wav
+/backend/engine/youtube-agent/test_out.mp4
+/backend/videoTEMP_MPY_wvf_snd.mp4
