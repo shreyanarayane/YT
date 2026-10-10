@@ -17,7 +17,9 @@ export default defineConfig(({ mode }) => {
     define: {
       __API_BASE_URL__: JSON.stringify(value('API_BASE_URL', 'http://127.0.0.1:8000')),
       __SUPABASE_URL__: JSON.stringify(value('SUPABASE_URL')),
-      __SUPABASE_PUBLISHABLE_KEY__: JSON.stringify(value('SUPABASE_PUBLISHABLE_KEY')),
+      __SUPABASE_PUBLISHABLE_KEY__: JSON.stringify(
+        value('SUPABASE_PUBLISHABLE_KEY', value('SUPABASE_ANON_KEY')),
+      ),
     },
   };
 });

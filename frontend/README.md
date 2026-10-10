@@ -14,7 +14,9 @@ npm run dev
 ```
 
 The Vite config reads `API_BASE_URL`, `SUPABASE_URL`, and
-`SUPABASE_PUBLISHABLE_KEY` from the repository-root `.env` for local builds.
+`SUPABASE_PUBLISHABLE_KEY` from the repository-root `.env` for local builds. If
+you still use Supabase's legacy public `SUPABASE_ANON_KEY` variable, it is
+accepted as a fallback.
 The API URL defaults to `http://127.0.0.1:8000`. Only these three public values
 are embedded in the browser build; the Supabase service-role key is never
 exposed.

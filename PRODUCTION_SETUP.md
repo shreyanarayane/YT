@@ -66,7 +66,8 @@ the application and are not migrated automatically.
   preset to Vite, install command to `npm ci`, build command to `npm run build`,
   and output directory to `dist`. Add `API_BASE_URL` (your Render API URL),
   `SUPABASE_URL`, and `SUPABASE_PUBLISHABLE_KEY` as Vercel project environment
-  variables. Never pass the Supabase service-role key to the frontend build.
+  variables (`SUPABASE_ANON_KEY` is accepted as a public-key fallback). Never
+  pass the Supabase service-role key to the frontend build.
 - Set `CORS_ALLOW_ORIGINS` on Render to the comma-separated Vercel site origins
   (for example, the production domain and any preview domain you intentionally
   allow). Production defaults to no browser origins when this is unset.
