@@ -11,6 +11,7 @@ import {
 import { API_BASE_URL, api, mediaUrl } from './api';
 import './styles.css';
 import './billing.css';
+import './topic-discovery.css';
 
 const SUPABASE_URL = __SUPABASE_URL__;
 const SUPABASE_PUBLISHABLE_KEY = __SUPABASE_PUBLISHABLE_KEY__;
@@ -121,6 +122,7 @@ function App() {
   const [busyKey, setBusyKey] = useState('');
   const [db, setDb] = useState(null);
   const [topics, setTopics] = useState([]);
+  const [topicsNote, setTopicsNote] = useState('');
   const [seeds, setSeeds] = useState([]);
   const [seedInput, setSeedInput] = useState('');
   const [customTopic, setCustomTopic] = useState('');
@@ -182,7 +184,10 @@ function App() {
     const [statusResult, topicsResult, seedsResult, videosResult, analyticsResult, configResult] = jobs;
     if (statusResult.status === 'fulfilled') setDb(statusResult.value);
     else setDb({ connected: false, message: errorText(statusResult.reason), dialect: 'Supabase Postgres' });
-    if (topicsResult.status === 'fulfilled') setTopics(topicsResult.value.topics || []);
+    if (topicsResult.status === 'fulfilled') {
+      setTopics(topicsResult.value.topics || []);
+      setTopicsNote(topicsResult.value.note || '');
+    }
     if (seedsResult.status === 'fulfilled') setSeeds(seedsResult.value.seeds || []);
     if (videosResult.status === 'fulfilled') setVideos(videosResult.value.videos || []);
     if (analyticsResult.status === 'fulfilled') setAnalytics(analyticsResult.value);
@@ -210,7 +215,7 @@ function App() {
   async function saveSeeds(nextSeeds) {
     const payload = [...new Set(nextSeeds.map(item => item.trim()).filter(Boolean))].slice(0, 20);
     const result = await run('seeds', () => api('/api/topics/seeds', { token, method: 'POST', body: { seeds: payload } }), 'Your seed topics are saved.');
-    if (result) { setSeeds(result.seeds || payload); setSeedInput(''); const updated = await api('/api/topics', { token }); setTopics(updated.topics || []); }
+    if (result) { setSeeds(result.seeds || payload); setSeedInput(''); const updated = await api('/api/topics', { token }); setTopics(updated.topics || []); setTopicsNote(updated.note || ''); }
   }
 
   async function research() {
@@ -363,12 +368,26 @@ function App() {
         </section>}
         {notice && <div className={`toast ${notice.kind}`}><span>{notice.kind === 'error' ? <X size={16} /> : <Check size={16} />}</span>{notice.message}<button onClick={() => setNotice(null)} aria-label="Dismiss"><X size={15} /></button></div>}
         {active === 'ideas' && <section>
-          <div className="page-intro"><div><div className="eyebrow"><span className="live-dot" /> YOUR NEXT BIG IDEA STARTS HERE</div><h1>Find your next <span>great story.</span></h1><p>Explore ideas shaped around your niche, then turn the best ones into a script.</p></div><button className="button secondary" onClick={() => run('refresh-topics', async () => { const data = await api('/api/topics', { token }); setTopics(data.topics || []); }, 'Ideas refreshed.')}><RefreshCw size={15} /> Refresh ideas</button></div>
+          <div className="page-intro"><div><div className="eyebrow"><span className="live-dot" /> YOUR NEXT BIG IDEA STARTS HERE</div><h1>Find your next <span>great story.</span></h1><p>Explore niche-specific subtopics, avoid repeating past videos, and pick the angle you want to make next.</p></div><button className="button secondary" onClick={() => run('refresh-topics', async () => { const data = await api('/api/topics', { token }); setTopics(data.topics || []); setTopicsNote(data.note || ''); }, 'Fresh ideas loaded.')}><RefreshCw size={15} /> Refresh ideas</button></div>
           <div className="idea-layout"><div className="main-column">
-            <div className="section-heading"><div><span className="section-kicker">CURATED FOR YOUR CHANNEL</span><h2>Trending opportunities <span className="count-pill">{topics.length}</span></h2></div><span className="muted-inline"><Activity size={14} /> Updated just now</span></div>
+            <div className="section-heading"><div><span className="section-kicker">CURATED FOR YOUR CHANNEL</span><h2>Fresh ideas from your niche <span className="count-pill">{topics.length}</span></h2></div><span className="muted-inline"><Activity size={14} />{topicsNote || 'Ideas are personalized to your saved seed topics.'}</span></div>
             {!seeds.length && <div className="notice info"><Lightbulb size={16} /> Add a few niche seed topics on the right to get personalized ideas.</div>}
-            <div className="topic-grid">{topics.map((item, index) => <article className="topic-card" key={`${item.topic}-${index}`}><div className="topic-card-top"><span className="topic-index">{String(index + 1).padStart(2, '0')}</span><span className={`score-chip ${item.score >= .85 ? 'score-high' : ''}`}><ArrowUpRight size={13} />{Math.round((item.score || 0) * 100)}%</span></div><h3>{item.topic}</h3><div className="topic-card-bottom"><span className="topic-tag">{item.needs_review ? 'Review suggested' : 'Good opportunity'}</span><button className="text-action" onClick={() => generateScript(item.topic)}>Write a script <ArrowRight size={14} /></button></div></article>)}</div>
-            <div className="research-card"><div className="research-icon"><Search size={18} /></div><div className="research-copy"><h3>Have a topic in mind?</h3><p>Check it against your content guidelines before you start writing.</p><div className="research-row"><input value={customTopic} onChange={e => setCustomTopic(e.target.value)} placeholder="Try “the future of sustainable fashion”…" onKeyDown={e => e.key === 'Enter' && research()} /><button className="button primary" onClick={research} disabled={busyKey === 'research'}>{busyKey === 'research' ? <LoaderCircle className="spin" size={16} /> : <>Check topic <ArrowRight size={15} /></>}</button></div>{researched && <div className={`research-result ${researched.allowed ? 'success' : 'warning'}`}><CheckCircle2 size={16} /><span><b>{researched.allowed ? 'Looks promising' : 'Needs a closer look'}</b> · Score {Number(researched.score).toFixed(2)}{researched.reason ? ` · ${researched.reason}` : ''}</span></div>}</div></div>
+            {topics.length ? <div className="topic-grid">{topics.map((item, index) => <article className="topic-card" key={`${item.topic}-${index}`}><div className="topic-card-top"><span className="topic-index">{String(index + 1).padStart(2, '0')}</span><span className={`score-chip ${item.needs_review ? '' : 'score-high'}`}>{item.source?.includes('rising') ? 'RISING TREND' : item.source?.includes('Google Trends') ? 'RELATED TREND' : 'FRESH ANGLE'}</span></div><h3>{item.topic}</h3><div className="topic-card-bottom"><span className="topic-tag">{item.source || (item.needs_review ? 'Review suggested' : 'Worth exploring')}</span><button className="text-action" onClick={() => generateScript(item.topic)}>Use this angle <ArrowRight size={14} /></button></div></article>)}</div> : <div className="notice info idea-empty"><Lightbulb size={16} /><span>{topicsNote || 'No fresh subtopics yet. Refresh ideas or add another seed topic to widen the search.'}</span></div>}
+            <div className="research-card">
+              <div className="research-icon"><Search size={18} /></div>
+              <div className="research-copy">
+                <h3>Find a fresh angle from any topic</h3>
+                <p>Enter a seed or a topic you’ve already covered. We’ll suggest related, unmade ideas that are worth exploring.</p>
+                <div className="research-row">
+                  <input value={customTopic} onChange={e => { setCustomTopic(e.target.value); setResearched(null); }} placeholder="Enter a niche seed or topic…" onKeyDown={e => e.key === 'Enter' && research()} />
+                  <button className="button primary" onClick={research} disabled={busyKey === 'research'}>{busyKey === 'research' ? <LoaderCircle className="spin" size={16} /> : <>Find fresh angles <ArrowRight size={15} /></>}</button>
+                </div>
+                {researched && <div className={`research-result ${researched.allowed ? 'success' : 'warning'}`}><CheckCircle2 size={16} /><span><b>{researched.covered ? 'You have covered this topic' : researched.allowed ? 'Topic looks promising' : 'Needs a closer look'}</b>{researched.covered ? ' · Here are fresh angles instead.' : researched.reason ? ` · ${researched.reason}` : ''}</span></div>}
+                {researched?.allowed && !researched.covered && <button className="text-action manual-topic-action" type="button" onClick={() => generateScript(researched.topic)}>Make a video on “{researched.topic}” <ArrowRight size={14} /></button>}
+                {researched?.recommendations?.length > 0 && <div className="related-ideas"><div className="related-ideas-heading"><b>Fresh angles related to “{researched.topic}”</b><small>{researched.recommendations_note}</small></div><div className="related-ideas-list">{researched.recommendations.map((item, index) => <button className="related-idea" type="button" key={`${item.topic}-${index}`} onClick={() => generateScript(item.topic)}><span><b>{item.topic}</b><small>{item.source || 'Related idea'}{item.needs_review ? ' · Review suggested' : ''}</small></span><ArrowRight size={15} /></button>)}</div></div>}
+                {researched && !researched.recommendations?.length && <div className="research-hint">{researched.recommendations_note}</div>}
+              </div>
+            </div>
           </div><aside className="side-column"><div className="panel seed-panel"><div className="panel-heading"><div><span className="section-kicker">YOUR NICHE</span><h2>Seed topics</h2></div><span className="tiny-counter">{seeds.length}/20</span></div><p className="panel-description">Topics that guide the ideas we find for you.</p><div className="seed-list">{seeds.map(seed => <span className="seed-chip" key={seed}>{seed}<button aria-label={`Remove ${seed}`} onClick={() => saveSeeds(seeds.filter(item => item !== seed))}><X size={12} /></button></span>)}{!seeds.length && <div className="empty-mini">No seeds yet. Add your first niche below.</div>}</div><form className="seed-add" onSubmit={e => { e.preventDefault(); if (seedInput.trim() && seeds.length < 20) saveSeeds([...seeds, seedInput]); }}><input value={seedInput} onChange={e => setSeedInput(e.target.value)} placeholder="Add a topic…" maxLength={255} /><button aria-label="Add seed topic" disabled={!seedInput.trim() || seeds.length >= 20 || busyKey === 'seeds'}><Plus size={17} /></button></form><small className="helper-copy">Up to 20 topics · press enter to add</small></div>
             <div className="panel tip-panel"><div className="tip-mark"><Lightbulb size={16} /></div><span className="section-kicker">A QUICK TIP</span><p>Specific seed topics lead to sharper, more relevant video ideas.</p><button className="text-action" onClick={() => setActive('studio')}>Open script studio <ArrowRight size={14} /></button></div>
           </aside></div>

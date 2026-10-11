@@ -38,16 +38,23 @@ from backend.billing import (
 
 # Import youtube-agent modules safely with fallbacks
 try:
-    from topic_research import get_ranked_topics
+    from topic_research import get_ranked_topics, is_topic_covered
 except ImportError:
-    def get_ranked_topics(seed_terms, top_n=5, performance=None):
-        return [
-            {"topic": "SIP explained", "score": 0.92, "needs_review": False},
-            {"topic": "How mutual funds work", "score": 0.88, "needs_review": False},
-            {"topic": "How inflation affects your money", "score": 0.81, "needs_review": False},
-            {"topic": "Gold vs equity", "score": 0.77, "needs_review": False},
-            {"topic": "How compound interest works", "score": 0.95, "needs_review": False},
+    def get_ranked_topics(seed_terms, top_n=5, performance=None, exclude_topics=None):
+        candidates = [
+            f"{seed}: beginner mistakes and what to do instead"
+            for seed in seed_terms
+        ] + [
+            f"{seed} explained with a real-world example"
+            for seed in seed_terms
         ]
+        return [
+            {"topic": topic, "score": 0.5, "needs_review": False, "source": "Niche idea · not live trend data"}
+            for topic in candidates
+            if not is_topic_covered(topic, exclude_topics or [])
+        ][:top_n]
+    def is_topic_covered(candidate, covered_topics):
+        return candidate.strip().casefold() in {topic.strip().casefold() for topic in covered_topics}
 
 try:
     from script_writer import write_script
@@ -274,21 +281,23 @@ def get_topics(user: AuthenticatedUser = Depends(require_current_user)):
             "topic_performance", {"user_id": f"eq.{user.id}"}, columns="topic,score,attempts"
         )
         performance = {row["topic"].lower().strip(): row for row in performance_rows}
-        ranked = get_ranked_topics(seeds, top_n=8, performance=performance)
-        if not ranked:
-            raise Exception("No ranked topics returned")
-        return {"topics": ranked, "seeds": seeds}
+        covered_rows = store.select(
+            "video_projects", {"user_id": f"eq.{user.id}"}, columns="topic,title", order="created_at.desc", limit=500
+        )
+        covered = list(dict.fromkeys(
+            [value.strip() for row in covered_rows for value in (row.get("topic", ""), row.get("title", "")) if value and value.strip()]
+            + [row["topic"].strip() for row in performance_rows if row.get("topic", "").strip()]
+        ))
+        ranked = get_ranked_topics(seeds, top_n=8, performance=performance, exclude_topics=covered)
+        return {
+            "topics": ranked,
+            "seeds": seeds,
+            "covered_count": len(covered_rows),
+            "note": "Suggestions are filtered against your saved drafts and previous video projects." if ranked else "No fresh subtopics were found this time. Refresh to try again, or add another seed topic.",
+        }
     except Exception as e:
-        # Graceful fallback topics if Google trends is rate limited
-        fallback = [
-            {"topic": "SIP vs Lump Sum for Beginners", "score": 0.94, "needs_review": False},
-            {"topic": "How Compound Interest Makes You Rich", "score": 0.91, "needs_review": False},
-            {"topic": "Emergency Fund: How Much Do You Really Need?", "score": 0.87, "needs_review": False},
-            {"topic": "Credit Card Hacks to Save Money", "score": 0.83, "needs_review": False},
-            {"topic": "Index Funds vs Direct Stocks", "score": 0.79, "needs_review": False},
-            {"topic": "Real Estate vs Mutual Funds", "score": 0.75, "needs_review": False},
-        ]
-        return {"topics": fallback, "seeds": seeds, "note": f"Trends fallback used: {e}"}
+        print(f"[topics] Could not load recommendations for user {user.id}: {e}")
+        return {"topics": [], "seeds": seeds, "note": "We couldn't load fresh ideas right now. Please try refreshing in a moment."}
 
 
 @app.post("/api/topics/research")
@@ -297,12 +306,33 @@ def research_topic(req: CustomTopicRequest, user: AuthenticatedUser = Depends(re
     if not topic:
         raise HTTPException(status_code=400, detail="Topic cannot be empty")
     verdict = check_topic(topic)
+    projects = store.select(
+        "video_projects", {"user_id": f"eq.{user.id}"}, columns="topic,title", order="created_at.desc", limit=500
+    )
+    covered = list(dict.fromkeys(
+        value.strip() for row in projects for value in (row.get("topic", ""), row.get("title", "")) if value and value.strip()
+    ))
+    try:
+        performance_rows = store.select(
+            "topic_performance", {"user_id": f"eq.{user.id}"}, columns="topic,score,attempts"
+        )
+        covered = list(dict.fromkeys(covered + [row["topic"].strip() for row in performance_rows if row.get("topic", "").strip()]))
+        performance = {row["topic"].lower().strip(): row for row in performance_rows}
+        recommendations = get_ranked_topics(
+            [topic], top_n=6, performance=performance, exclude_topics=covered + [topic]
+        ) if verdict["allowed"] else []
+    except Exception as e:
+        print(f"[topics] Related topic lookup failed for user {user.id}: {e}")
+        recommendations = []
     return {
         "topic": topic,
         "score": 0.75,
         "allowed": verdict["allowed"],
         "needs_review": verdict["needs_review"],
         "reason": verdict.get("reason", "Checked"),
+        "covered": is_topic_covered(topic, covered),
+        "recommendations": recommendations,
+        "recommendations_note": "Ideas are based on live related Google Trends when available; otherwise they are seed-specific evergreen angles." if recommendations else "No fresh related suggestions found. Try another seed or refresh later.",
     }
 
 
