@@ -30,8 +30,23 @@ function errorText(error) {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
 }
 
+function getAuthCallbackError() {
+  if (typeof window === 'undefined' || !window.location.hash) return null;
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const error = params.get('error');
+  const code = params.get('error_code');
+  const description = params.get('error_description');
+  if (!error && !code) return null;
+  return {
+    error: error || 'access_denied',
+    code: code || 'auth_error',
+    description: description || 'This sign-in link has expired or is invalid. Please request a fresh one.',
+  };
+}
+
 function AuthScreen({ onSession }) {
   const [mode, setMode] = useState('login');
+  const [authMethod, setAuthMethod] = useState('password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -44,6 +59,19 @@ function AuthScreen({ onSession }) {
     setError(''); setInfo(''); setBusy(true);
     try {
       if (!supabase) throw new Error('Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in the root .env, or in Vercel project environment variables.');
+
+      if (authMethod === 'magic') {
+        const result = await supabase.auth.signInWithOtp({
+          email: email.trim(),
+          options: {
+            emailRedirectTo: window.location.origin,
+          },
+        });
+        if (result.error) throw result.error;
+        setInfo('Magic link sent. Check your inbox and open the link from this device to continue.');
+        return;
+      }
+
       const result = mode === 'login'
         ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
         : await supabase.auth.signUp({ email: email.trim(), password, options: { data: { full_name: name.trim() } } });
@@ -64,12 +92,16 @@ function AuthScreen({ onSession }) {
       <a className="brand brand-auth" href="#"><span className="brand-mark"><Sparkles size={18} /></span><span>studio<span className="brand-light">flow</span></span></a>
       <div className="auth-heading"><span className="eyebrow"><span className="live-dot" /> YOUR CREATOR WORKSPACE</span><h1>Good ideas deserve<br /><span>a bigger stage.</span></h1><p>Research, write, and manage your next great video—all in one focused space.</p></div>
       <div className="auth-tabs"><button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); }}>Sign in</button><button className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setError(''); }}>Create account</button></div>
+      <div className="auth-tabs" style={{ marginTop: 12 }}>
+        <button type="button" className={authMethod === 'password' ? 'active' : ''} onClick={() => { setAuthMethod('password'); setError(''); }}>Password</button>
+        <button type="button" className={authMethod === 'magic' ? 'active' : ''} onClick={() => { setAuthMethod('magic'); setError(''); }}>Magic link</button>
+      </div>
       <form className="auth-form" onSubmit={submit}>
-        {mode === 'signup' && <label>Your name<input value={name} onChange={e => setName(e.target.value)} placeholder="Alex Morgan" autoComplete="name" required /></label>}
+        {mode === 'signup' && authMethod === 'password' && <label>Your name<input value={name} onChange={e => setName(e.target.value)} placeholder="Alex Morgan" autoComplete="name" required /></label>}
         <label>Email address<div className="input-icon"><span>@</span><input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></div></label>
-        <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 6 characters" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={6} required /></label>
+        {authMethod === 'password' && <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 6 characters" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={6} required /></label>}
         {error && <div className="notice error"><X size={16} />{error}</div>}{info && <div className="notice success"><CheckCircle2 size={16} />{info}</div>}
-        <button className="button primary auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <>{mode === 'login' ? 'Continue to workspace' : 'Create your account'}<ArrowRight size={17} /></>}</button>
+        <button className="button primary auth-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <>{authMethod === 'magic' ? 'Send magic link' : (mode === 'login' ? 'Continue to workspace' : 'Create your account')}<ArrowRight size={17} /></>}</button>
       </form>
       <div className="auth-foot"><ShieldCheck size={15} /> Secure sign-in powered by Supabase Auth</div>
     </section>
@@ -112,6 +144,13 @@ function App() {
 
   useEffect(() => {
     if (!supabase) { setAuthReady(true); return undefined; }
+
+    const callbackError = getAuthCallbackError();
+    if (callbackError) {
+      flash(callbackError.description, 'error');
+      window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+    }
+
     let alive = true;
     supabase.auth.getSession().then(async ({ data }) => {
       if (!alive) return;
