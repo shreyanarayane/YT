@@ -39,6 +39,35 @@ Never put Razorpay secrets, JWT secrets, Google OAuth secrets, or payment data
 in Flutter code or Git. Razorpay hosts checkout, so the application never
 handles card or UPI details.
 
+## YouTube channel connection and uploads
+
+Each creator must connect their own Google/YouTube account from **Settings →
+YouTube publishing**. Google redirects back to the API; StudioFlow encrypts the
+user's refresh token using `YOUTUBE_TOKEN_ENCRYPTION_KEY` before saving it in
+Supabase. A single OAuth client configuration is shared by the app, but the
+channel authorization is individual to each user. Disconnecting revokes the
+Google token and removes the encrypted record.
+
+1. In Google Cloud Console, create a **Web application** OAuth client, enable
+  YouTube Data API v3, and configure the consent screen. Add the Render API
+  callback URL below as an authorized redirect URI.
+2. Set `GOOGLE_CLIENT_SECRET_JSON` (the full web client JSON),
+  `GOOGLE_OAUTH_REDIRECT_URI=https://<your-api>/api/youtube/callback`, and
+  `FRONTEND_URL=https://<your-frontend>` in Render. Never put the client JSON
+  or client secret in Vercel/browser variables.
+3. Generate a Fernet key with Python's `Fernet.generate_key()` and a separate
+  random `YOUTUBE_OAUTH_STATE_SECRET` of at least 32 characters. Set both in
+  Render and keep them stable; changing the encryption key makes existing
+  connections unreadable until users reconnect.
+4. Apply `supabase/migrations/202610110002_youtube_connections.sql` in Supabase.
+5. Deploy the API and frontend, sign in, open **Settings**, and click
+  **Connect YouTube account**. Each user reviews Google's consent and selects
+  their own channel. Upload actions then use only that user's authorization.
+
+YouTube's OAuth consent-screen verification/test-user rules apply. In testing
+mode, only configured test users may connect. The app defaults uploads to
+private; users can explicitly select another privacy setting per upload.
+
 ## Before enabling automatic publishing
 
 Scheduled posting records are stored, but a production scheduler and encrypted,

@@ -46,8 +46,11 @@ def upload_video(
     category_id: str,
     privacy_status: str,
     tags: list[str] | None = None,
+    credentials: Credentials | None = None,
 ) -> str:
-    creds = _get_credentials()
+    # Web requests always pass the credential for the authenticated owner.
+    # The local token-file flow is retained only for the standalone CLI tool.
+    creds = credentials or _get_credentials()
     youtube = build("youtube", "v3", credentials=creds)
 
     body = {

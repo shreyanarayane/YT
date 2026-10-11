@@ -13,6 +13,7 @@ import './styles.css';
 import './billing.css';
 import './topic-discovery.css';
 import './video-build.css';
+import './youtube-connection.css';
 
 const SUPABASE_URL = __SUPABASE_URL__;
 const SUPABASE_PUBLISHABLE_KEY = __SUPABASE_PUBLISHABLE_KEY__;
@@ -138,6 +139,7 @@ function App() {
   const [subscription, setSubscription] = useState(null);
   const [billingLoading, setBillingLoading] = useState(false);
   const [billingError, setBillingError] = useState('');
+  const [youtubeConnection, setYoutubeConnection] = useState({ connected: false, channel_title: null });
 
   const token = session?.access_token;
   const flash = useCallback((message, kind = 'success') => {
@@ -181,8 +183,9 @@ function App() {
     const jobs = await Promise.allSettled([
       api('/api/db/status'), api('/api/topics', { token }), api('/api/topics/seeds', { token }),
       api('/api/videos', { token }), api('/api/analytics', { token }), api('/api/config', { token }),
+      api('/api/youtube/status', { token }),
     ]);
-    const [statusResult, topicsResult, seedsResult, videosResult, analyticsResult, configResult] = jobs;
+    const [statusResult, topicsResult, seedsResult, videosResult, analyticsResult, configResult, youtubeResult] = jobs;
     if (statusResult.status === 'fulfilled') setDb(statusResult.value);
     else setDb({ connected: false, message: errorText(statusResult.reason), dialect: 'Supabase Postgres' });
     if (topicsResult.status === 'fulfilled') {
@@ -192,6 +195,7 @@ function App() {
     if (seedsResult.status === 'fulfilled') setSeeds(seedsResult.value.seeds || []);
     if (videosResult.status === 'fulfilled') setVideos(videosResult.value.videos || []);
     if (analyticsResult.status === 'fulfilled') setAnalytics(analyticsResult.value);
+    if (youtubeResult.status === 'fulfilled') setYoutubeConnection(youtubeResult.value);
     if (configResult.status === 'fulfilled') {
       const value = configResult.value;
       setConfig(value);
@@ -200,6 +204,24 @@ function App() {
   }, [token]);
 
   useEffect(() => { if (token) loadWorkspace(); }, [token, loadWorkspace]);
+
+  useEffect(() => {
+    if (!token) return;
+    const params = new URLSearchParams(window.location.search);
+    const youtubeResult = params.get('youtube');
+    if (!youtubeResult) return;
+    if (youtubeResult === 'connected') {
+      flash('YouTube account connected. Uploads will go to your own channel.', 'success');
+      api('/api/youtube/status', { token }).then(setYoutubeConnection).catch(error => flash(errorText(error), 'error'));
+    } else if (youtubeResult === 'denied') {
+      flash('YouTube connection was cancelled. No account was connected.', 'error');
+    } else {
+      flash('YouTube could not be connected. Check Google OAuth configuration and try again.', 'error');
+    }
+    params.delete('youtube');
+    const query = params.toString();
+    window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ''}`);
+  }, [token, flash]);
 
   async function run(key, task, successMessage) {
     setBusyKey(key);
@@ -290,6 +312,17 @@ function App() {
     const payload = { ...settings, target_seconds: Number(settings.target_seconds) };
     const result = await run('settings', () => api('/api/config', { token, method: 'POST', body: payload }), 'Workspace settings updated.');
     if (result) { const next = await api('/api/config', { token }); setConfig(next); }
+  }
+
+  async function connectYoutube() {
+    const result = await run('youtube-connect', () => api('/api/youtube/connect', { token }));
+    if (result?.authorization_url) window.location.assign(result.authorization_url);
+  }
+
+  async function disconnectYoutube() {
+    if (!window.confirm('Disconnect YouTube? StudioFlow will revoke and remove the saved authorization for your account.')) return;
+    const result = await run('youtube-disconnect', () => api('/api/youtube/connection', { token, method: 'DELETE' }), 'YouTube account disconnected.');
+    if (result) setYoutubeConnection({ connected: false, channel_title: null });
   }
 
   const loadBilling = useCallback(async () => {
@@ -415,7 +448,17 @@ function App() {
 
         {active === 'analytics' && <section><div className="page-intro"><div><div className="eyebrow"><span className="live-dot" /> LEARN FROM EVERY PUBLISH</div><h1>Ideas that <span>keep getting smarter.</span></h1><p>Track topic performance and feed real-world results into your next round of ideas.</p></div><button className="button secondary" onClick={() => run('analytics-refresh', async () => setAnalytics(await api('/api/analytics', { token })), 'Performance refreshed.')}><RefreshCw size={15} /> Refresh</button></div><div className="metric-grid"><div className="metric-card"><span className="metric-label">TOPICS LEARNED</span><b>{analytics.total_learned_topics || 0}</b><small><Layers3 size={14} /> Tracked in your workspace</small></div><div className="metric-card"><span className="metric-label">AVERAGE SCORE</span><b>{analytics.summary?.avg_score ? `${Math.round(analytics.summary.avg_score * 100)}%` : '—'}</b><small><Gauge size={14} /> Across reported topics</small></div><div className="metric-card metric-featured"><span className="metric-label">TOP PERFORMER</span><b>{analytics.summary?.top_performing || 'Not yet reported'}</b><small><ArrowUpRight size={14} /> Your current strongest topic</small></div></div><div className="panel performance-panel"><div className="panel-heading"><div><span className="section-kicker">TOPIC HISTORY</span><h2>Performance signals</h2></div><span className="muted-inline">Score is a 0–100% signal</span></div>{analytics.topics?.length ? <div className="table-scroll"><table><thead><tr><th>TOPIC</th><th>SCORE</th><th>ATTEMPTS</th><th>LAST VIEWS</th><th>REPORT RESULT</th></tr></thead><tbody>{analytics.topics.map(item => <tr key={item.topic}><td><b>{item.topic}</b></td><td><div className="score-cell"><span className="score-bar"><i style={{ width: `${Math.max(0, Math.min(100, item.score * 100))}%` }} /></span>{Math.round(item.score * 100)}%</div></td><td>{item.attempts}</td><td>{item.last_stats?.views ?? '—'}</td><td><form className="feedback-form" onSubmit={event => sendFeedback(item, event)}><select name="score" defaultValue="0.7" aria-label="Performance score"><option value="1">Great</option><option value="0.7">Good</option><option value="0.4">Average</option><option value="0.1">Low</option></select><input name="views" type="number" min="0" placeholder="Views" aria-label="Views" /><input name="subscribers" type="number" min="0" placeholder="Subs" aria-label="Subscribers gained" /><input name="attempts" type="hidden" value="1" /><button className="icon-button submit-feedback" title="Save result" disabled={busyKey === `feedback-${item.topic}`}><Send size={14} /></button></form></td></tr>)}</tbody></table></div> : <div className="empty-state compact"><div className="empty-icon"><BarChart3 size={22} /></div><h3>No performance data yet</h3><p>After a topic is used, report its results here to improve future recommendations.</p></div>}</div></section>}
 
-        {active === 'settings' && <section><div className="page-intro"><div><div className="eyebrow"><span className="live-dot" /> MAKE THIS SPACE YOURS</div><h1>Workspace <span>settings.</span></h1><p>Connection health, channel preferences, and integrations.</p></div><button className="button secondary" onClick={() => run('settings-refresh', loadWorkspace)}><RefreshCw size={15} /> Refresh status</button></div><div className="settings-layout"><div className="panel settings-panel"><div className="panel-heading"><div><span className="section-kicker">CHANNEL DEFAULTS</span><h2>Publishing preferences</h2></div></div><form className="settings-form" onSubmit={saveSettings}><label>Channel name<input value={settings.channel_name} onChange={e => setSettings({ ...settings, channel_name: e.target.value })} disabled={!user.is_admin} /></label><div className="two-fields"><label>Target duration (seconds)<input type="number" min="15" max="600" value={settings.target_seconds} onChange={e => setSettings({ ...settings, target_seconds: e.target.value })} disabled={!user.is_admin} /></label><label>Default privacy<select value={settings.default_privacy} onChange={e => setSettings({ ...settings, default_privacy: e.target.value })} disabled={!user.is_admin}><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label></div><label>Narration voice<select value={settings.voice} onChange={e => setSettings({ ...settings, voice: e.target.value })} disabled={!user.is_admin}>{VOICES.map(voice => <option key={voice}>{voice}</option>)}</select></label>{user.is_admin && <label>Pexels API key (optional)<input type="password" autoComplete="off" value={settings.pexels_api_key} onChange={e => setSettings({ ...settings, pexels_api_key: e.target.value })} placeholder="Leave blank to keep existing key" /></label>}<div className="settings-submit"><span>{user.is_admin ? 'Admin changes apply to the backend workspace.' : 'Only admins can change channel defaults.'}</span>{user.is_admin && <button className="button primary" disabled={busyKey === 'settings'}><Check size={15} /> Save settings</button>}</div></form></div><div className="side-column settings-side"><div className="panel health-panel"><div className="panel-heading"><div><span className="section-kicker">SERVICE HEALTH</span><h2>Database</h2></div><span className={`health-icon ${db?.connected ? '' : 'unhealthy'}`}>{db?.connected ? <CheckCircle2 size={17} /> : <Activity size={17} />}</span></div><div className="health-row"><span>Provider</span><b>Supabase Postgres</b></div><div className="health-row"><span>API</span><b className="health-value"><span className={`connection-dot ${db?.connected ? '' : 'off'}`} />{db?.connected ? 'Connected' : 'Unavailable'}</b></div><p className="health-message">{db?.message || 'Checking database status…'}</p></div><div className="panel integrations-panel"><div className="panel-heading"><div><span className="section-kicker">CONNECTED SERVICES</span><h2>Integrations</h2></div></div>{[['Pexels media', config?.integrations?.pexels_configured], ['YouTube client', config?.integrations?.youtube_client_secret], ['YouTube account', config?.integrations?.youtube_authenticated], ['AI provider', config?.integrations?.anthropic_configured]].map(([label, ok]) => <div className="integration-row" key={label}><span>{label}</span><span className={`integration-state ${ok ? 'ok' : ''}`}><i />{ok ? 'Connected' : 'Not set up'}</span></div>)}</div></div></div></section>}
+        {active === 'settings' && <section><div className="page-intro"><div><div className="eyebrow"><span className="live-dot" /> MAKE THIS SPACE YOURS</div><h1>Workspace <span>settings.</span></h1><p>Connection health, channel preferences, and integrations.</p></div><button className="button secondary" onClick={() => run('settings-refresh', loadWorkspace)}><RefreshCw size={15} /> Refresh status</button></div><div className="settings-layout"><div className="panel settings-panel"><div className="panel-heading"><div><span className="section-kicker">CHANNEL DEFAULTS</span><h2>Publishing preferences</h2></div></div><form className="settings-form" onSubmit={saveSettings}><label>Channel name<input value={settings.channel_name} onChange={e => setSettings({ ...settings, channel_name: e.target.value })} disabled={!user.is_admin} /></label><div className="two-fields"><label>Target duration (seconds)<input type="number" min="15" max="600" value={settings.target_seconds} onChange={e => setSettings({ ...settings, target_seconds: e.target.value })} disabled={!user.is_admin} /></label><label>Default privacy<select value={settings.default_privacy} onChange={e => setSettings({ ...settings, default_privacy: e.target.value })} disabled={!user.is_admin}><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label></div><label>Narration voice<select value={settings.voice} onChange={e => setSettings({ ...settings, voice: e.target.value })} disabled={!user.is_admin}>{VOICES.map(voice => <option key={voice}>{voice}</option>)}</select></label>{user.is_admin && <label>Pexels API key (optional)<input type="password" autoComplete="off" value={settings.pexels_api_key} onChange={e => setSettings({ ...settings, pexels_api_key: e.target.value })} placeholder="Leave blank to keep existing key" /></label>}<div className="settings-submit"><span>{user.is_admin ? 'Admin changes apply to the backend workspace.' : 'Only admins can change channel defaults.'}</span>{user.is_admin && <button className="button primary" disabled={busyKey === 'settings'}><Check size={15} /> Save settings</button>}</div></form></div><div className="side-column settings-side"><div className="panel youtube-connection-panel"><div className="panel-heading"><div><span className="section-kicker">YOUTUBE PUBLISHING</span><h2>Your channel</h2></div><span className={`integration-state ${youtubeConnection.connected ? 'ok' : ''}`}><i />{youtubeConnection.connected ? 'Connected' : 'Not connected'}</span></div><p className="youtube-connection-copy">Connect your own Google account. StudioFlow stores an encrypted refresh token on the server and uploads only to this channel after you choose Upload.</p>{youtubeConnection.connected ? <><div className="youtube-channel-name"><span className="connection-dot" />{youtubeConnection.channel_title || 'YouTube channel connected'}</div><button className="button secondary full-button" onClick={disconnectYoutube} disabled={busyKey === 'youtube-disconnect'}>{busyKey === 'youtube-disconnect' ? <LoaderCircle className="spin" size={15} /> : <X size={15} />} Disconnect YouTube</button></> : <button className="button primary full-button" onClick={connectYoutube} disabled={busyKey === 'youtube-connect'}>{busyKey === 'youtube-connect' ? <LoaderCircle className="spin" size={15} /> : <Upload size={15} />} Connect YouTube account <ArrowRight size={15} /></button>}<small className="youtube-security-note"><ShieldCheck size={13} /> Google consent required · Revoke access any time</small></div><div className="panel health-panel">
+          <div className="panel-heading"><div><span className="section-kicker">SERVICE HEALTH</span><h2>Database</h2></div><span className={`health-icon ${db?.connected ? '' : 'unhealthy'}`}>{db?.connected ? <CheckCircle2 size={17} /> : <Activity size={17} />}</span></div>
+          <div className="health-row"><span>Provider</span><b>Supabase Postgres</b></div>
+          <div className="health-row"><span>API</span><b className="health-value"><span className={`connection-dot ${db?.connected ? '' : 'off'}`} />{db?.connected ? 'Connected' : 'Unavailable'}</b></div>
+          <p className="health-message">{db?.message || 'Checking database status…'}</p>
+        </div>
+        <div className="panel integrations-panel">
+          <div className="panel-heading"><div><span className="section-kicker">CONNECTED SERVICES</span><h2>Integrations</h2></div></div>
+          {[['Pexels media', config?.integrations?.pexels_configured], ['YouTube client', config?.integrations?.youtube_client_secret], ['YouTube account', config?.integrations?.youtube_authenticated], ['AI provider', config?.integrations?.anthropic_configured]].map(([label, ok]) => <div className="integration-row" key={label}><span>{label}</span><span className={`integration-state ${ok ? 'ok' : ''}`}><i />{ok ? 'Connected' : 'Not set up'}</span></div>)}
+        </div>
+      </div></div></section>}
       </div>
       <footer className="page-footer"><span>StudioFlow · Creator workspace</span><span><span className={`connection-dot ${db?.connected ? '' : 'off'}`} /> {db?.connected ? 'All systems operational' : 'Database connection needs attention'}</span></footer>
     </main>

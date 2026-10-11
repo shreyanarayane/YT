@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -47,6 +48,7 @@ from backend.billing import (
     create_subscription,
     verify_webhook_signature,
 )
+from backend import youtube_oauth
 
 # Import youtube-agent modules safely with fallbacks
 try:
@@ -954,6 +956,37 @@ def list_videos(user: AuthenticatedUser = Depends(require_current_user)):
     return {"videos": results, "total": len(results)}
 
 
+@app.get("/api/youtube/status")
+def get_youtube_connection_status(user: AuthenticatedUser = Depends(require_current_user)):
+    return youtube_oauth.get_connection_status(user.id)
+
+
+@app.get("/api/youtube/connect")
+def connect_youtube_account(user: AuthenticatedUser = Depends(require_current_user)):
+    return {"authorization_url": youtube_oauth.create_authorization_url(user.id)}
+
+
+@app.get("/api/youtube/callback")
+def youtube_oauth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    if error:
+        return RedirectResponse(youtube_oauth.frontend_callback_url("denied"), status_code=303)
+    if not code or not state:
+        return RedirectResponse(youtube_oauth.frontend_callback_url("error"), status_code=303)
+    try:
+        youtube_oauth.complete_authorization(code, state)
+    except Exception as exc:
+        print(f"[youtube] OAuth callback failed: {exc}")
+        return RedirectResponse(youtube_oauth.frontend_callback_url("error"), status_code=303)
+    return RedirectResponse(youtube_oauth.frontend_callback_url("connected"), status_code=303)
+
+
+@app.delete("/api/youtube/connection")
+def disconnect_youtube_account(user: AuthenticatedUser = Depends(require_current_user)):
+    youtube_oauth.disconnect_user(user.id)
+    _write_audit_log("youtube.disconnected", user.id, "youtube_connection", user.id)
+    return {"success": True, "connected": False}
+
+
 @app.post("/api/videos/{video_id}/upload")
 def upload_video_endpoint(video_id: str, req: VideoUploadRequest,
                           user: AuthenticatedUser = Depends(require_current_user)):
@@ -964,7 +997,9 @@ def upload_video_endpoint(video_id: str, req: VideoUploadRequest,
 
     projects = store.select("video_projects", {"id": f"eq.{video_id}"})
     project = projects[0] if projects else None
-    if not project or (not user.is_admin and project["user_id"] != user.id):
+    # Publishing is an external side effect: even admins must explicitly use
+    # the account that owns this project and its connected YouTube channel.
+    if not project or project["user_id"] != user.id:
         raise HTTPException(status_code=404, detail="Video project not found")
     meta_file = out_dir / "meta.json"
     meta = {}
@@ -974,35 +1009,31 @@ def upload_video_endpoint(video_id: str, req: VideoUploadRequest,
     privacy = req.privacy_status or cfg.get("upload", {}).get("default_privacy", "private")
     yt_id = f"yt_{uuid.uuid4().hex[:11]}"
 
-    # Check if actual YouTube upload client is configured
     try:
         from youtube_upload import upload_video
         video_path = out_dir / "video.mp4"
-        # A missing token is expected on the first upload.  upload_video()
-        # creates it by running the OAuth consent flow using client_secret.json.
-        client_secret_path = ENGINE_DIR / "client_secret.json"
-        if video_path.exists() and client_secret_path.exists():
-            # Validate video file size before attempting upload
-            if video_path.stat().st_size < 1000:  # Less than 1KB is likely corrupted
-                raise ValueError(f"Video file too small ({video_path.stat().st_size} bytes), likely corrupted")
-            yt_id = upload_video(
-                video_path=video_path,
-                title=meta.get("title", "AI Shorts"),
-                description=meta.get("description", ""),
-                category_id=cfg.get("upload", {}).get("category_id", "27"),
-                privacy_status=privacy,
-            )
-            print(f"[upload] Successfully uploaded to YouTube: {yt_id}")
-        else:
-            missing = "video file" if not video_path.exists() else "client_secret.json"
-            raise FileNotFoundError(f"Cannot upload: missing {missing}")
+        if not video_path.exists():
+            raise HTTPException(status_code=409, detail="This project has no rendered video file yet.")
+        if video_path.stat().st_size < 1000:
+            raise HTTPException(status_code=409, detail=f"Video file is too small ({video_path.stat().st_size} bytes) and appears incomplete.")
+        credentials = youtube_oauth.get_user_credentials(user.id)
+        yt_id = upload_video(
+            video_path=video_path,
+            title=meta.get("title") or project.get("title") or "AI Shorts",
+            description=meta.get("description") or project.get("description") or "",
+            category_id=cfg.get("upload", {}).get("category_id", "27"),
+            privacy_status=privacy,
+            credentials=credentials,
+        )
+        print(f"[upload] Successfully uploaded to YouTube for user {user.id}: {yt_id}")
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[upload] YouTube API upload failed: {e}")
-        # Return error instead of fake success
         raise HTTPException(
-            status_code=500,
-            detail=f"YouTube upload failed: {str(e)}. Video was generated but could not be uploaded."
-        )
+            status_code=502,
+            detail=f"YouTube upload failed: {str(e)}. Your rendered video is still available to preview or download."
+        ) from e
 
     # Only mark as uploaded if we got a real YouTube ID (not a fallback)
     if not yt_id.startswith("yt_"):
@@ -1149,8 +1180,8 @@ def submit_feedback(req: FeedbackRequest, user: AuthenticatedUser = Depends(requ
 def get_configuration(user: AuthenticatedUser = Depends(require_current_user)):
     cfg = load_config()
     has_pexels = bool(cfg.get("pexels_api_key") and not cfg["pexels_api_key"].startswith("YOUR_"))
-    has_yt_secret = (ENGINE_DIR / "client_secret.json").exists()
-    has_yt_token = (ENGINE_DIR / "token.json").exists()
+    youtube_status = youtube_oauth.get_connection_status(user.id)
+    google_oauth_configured = bool(os.environ.get("GOOGLE_CLIENT_SECRET_JSON") or os.environ.get("GOOGLE_CLIENT_SECRETS_FILE") or (ENGINE_DIR / "client_secret.json").exists())
     return {
         "channel_name": cfg.get("channel", {}).get("name", "advpipe"),
         "seed_terms": cfg.get("channel", {}).get("niche_seed_terms", []),
@@ -1159,8 +1190,9 @@ def get_configuration(user: AuthenticatedUser = Depends(require_current_user)):
         "default_privacy": cfg.get("upload", {}).get("default_privacy", "private"),
         "integrations": {
             "pexels_configured": has_pexels,
-            "youtube_client_secret": has_yt_secret,
-            "youtube_authenticated": has_yt_token,
+            "youtube_client_secret": google_oauth_configured,
+            "youtube_authenticated": youtube_status["connected"],
+            "youtube_channel_title": youtube_status["channel_title"],
             "anthropic_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         }
     }
