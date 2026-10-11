@@ -21,14 +21,17 @@ Do not use the former `admin/admin123` or demo credentials.
 
 ## Razorpay test mode
 
-1. Create monthly Plans in the Razorpay test dashboard.
-2. Sign in as the administrator and create the matching app plans through
-   `POST /api/admin/plans`, including the Razorpay plan ID and limits.
-3. Set the three `RAZORPAY_*` environment variables from `backend/.env.example`.
-4. Add `POST /api/billing/webhooks/razorpay` as a Razorpay webhook and use the
-   same webhook secret in `RAZORPAY_WEBHOOK_SECRET`.
-5. Subscribe using `POST /api/billing/subscriptions`; redirect the customer to
-   the returned hosted `checkout_url`.
+1. Set Razorpay **test-mode** `RAZORPAY_KEY_ID` (`rzp_test_...`) and
+  `RAZORPAY_KEY_SECRET` in Render. The plan initializer rejects live keys.
+2. Sign in with an administrator account and open **Plan & billing**. Select
+  **Set up test plans** to create Starter (₹199), Creator (₹499), and Studio
+  (₹1,499) monthly plans, along with their app-side limits and Razorpay IDs.
+3. Enable the recurring payment methods supported by your Razorpay account in
+  its dashboard. Razorpay Checkout displays only methods eligible for that
+  account and customer; the app never collects payment details.
+4. Add `POST /api/billing/webhooks/razorpay` as a Razorpay test-mode webhook
+  and set its secret as `RAZORPAY_WEBHOOK_SECRET` in Render.
+5. Subscribe from the billing page and complete a Razorpay test checkout.
 6. Confirm Razorpay sends an authenticated webhook, then set
    `BILLING_ENFORCE_SUBSCRIPTIONS=true`.
 

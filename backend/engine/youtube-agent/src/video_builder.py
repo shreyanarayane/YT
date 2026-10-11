@@ -10,11 +10,12 @@ import os
 import random
 import tempfile
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import requests
+from proglog import ProgressBarLogger
 from moviepy import (
     AudioFileClip,
     ColorClip,
@@ -152,6 +153,21 @@ def _fallback_background(duration: float, resolution: tuple) -> ColorClip:
     return ColorClip(size=resolution, color=color, duration=duration)
 
 
+class _RenderProgressLogger(ProgressBarLogger):
+    """Forward MoviePy's frame progress to the caller without console output."""
+
+    def __init__(self, on_progress: Callable[[float], None]):
+        super().__init__(logged_bars=[])
+        self.on_progress = on_progress
+
+    def bars_callback(self, bar: str, attr: str, value: int, old_value: int | None = None):
+        if attr != "index" or bar not in {"t", "frame_index"}:
+            return
+        total = self.bars.get(bar, {}).get("total")
+        if total:
+            self.on_progress(max(0.0, min(1.0, value / total)))
+
+
 def build_video(
     topic: str,
     title: str,
@@ -160,6 +176,7 @@ def build_video(
     pexels_api_key: str,
     resolution: tuple,
     out_path: Path,
+    on_progress: Callable[[float], None] | None = None,
 ) -> Path:
     audio = AudioFileClip(str(narration_path))
     duration = audio.duration
@@ -198,12 +215,24 @@ def build_video(
     final = CompositeVideoClip([background, caption_clip], size=resolution).with_audio(audio).with_duration(duration)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    final.write_videofile(
-        str(out_path),
-        fps=30,
-        codec="libx264",
-        audio_codec="aac",
-        threads=4,
-        logger=None,
-    )
+    logger = _RenderProgressLogger(on_progress) if on_progress else None
+    try:
+        final.write_videofile(
+            str(out_path),
+            fps=30,
+            codec="libx264",
+            audio_codec="aac",
+            threads=1,
+            logger=logger,
+        )
+        if on_progress:
+            on_progress(1.0)
+    finally:
+        final.close()
+        audio.close()
+        for clip in locals().get("clips", []):
+            try:
+                clip.close()
+            except Exception:
+                pass
     return out_path

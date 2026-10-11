@@ -19,14 +19,45 @@ class BillingConfigurationError(RuntimeError):
     pass
 
 
-def _credentials() -> tuple[str, str]:
+def _credentials(*, test_mode: bool = False) -> tuple[str, str]:
     key_id = os.environ.get("RAZORPAY_KEY_ID")
     key_secret = os.environ.get("RAZORPAY_KEY_SECRET")
     if not key_id or not key_secret:
         raise BillingConfigurationError(
-            "Razorpay test keys are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
+            "Razorpay keys are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on the server."
+        )
+    if test_mode and not key_id.startswith("rzp_test_"):
+        raise BillingConfigurationError(
+            "Creator plan setup is test-only. Configure Razorpay test keys (rzp_test_...) before creating plans."
         )
     return key_id, key_secret
+
+
+def create_razorpay_plan(*, name: str, amount_paise: int, description: str, test_mode: bool = False) -> dict[str, Any]:
+    """Create a monthly Razorpay plan using server-held credentials."""
+    key_id, key_secret = _credentials(test_mode=test_mode)
+    response = requests.post(
+        f"{RAZORPAY_API_BASE}/plans",
+        auth=(key_id, key_secret),
+        json={
+            "period": "monthly",
+            "interval": 1,
+            "item": {
+                "name": name,
+                "amount": amount_paise,
+                "currency": "INR",
+                "description": description,
+            },
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        try:
+            details = response.json().get("error", {}).get("description", response.text)
+        except ValueError:
+            details = response.text
+        raise RuntimeError(f"Razorpay could not create plan '{name}': {details}")
+    return response.json()
 
 
 def create_subscription(*, razorpay_plan_id: str, customer_email: str, customer_name: str) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,16 @@ DATA_DIR = ENGINE_DIR / "data"
 CONFIG_PATH = ENGINE_DIR / "config.yaml"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+_VIDEO_BUILD_SEMAPHORE = threading.BoundedSemaphore(1)
+_STALE_BUILD_SECONDS = 15 * 60
+
+
+def _video_render_resolution(cfg: dict) -> tuple[int, int]:
+    configured = cfg.get("video", {}).get("resolution", [1080, 1920])
+    width, height = int(configured[0]), int(configured[1])
+    max_width = max(360, int(os.environ.get("VIDEO_MAX_WIDTH", "720")))
+    scale = min(1.0, max_width / max(width, 1))
+    return max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -32,6 +43,7 @@ from backend.auth import require_current_user, require_admin
 from backend.supabase_store import AuthenticatedUser, SupabaseConfigurationError, store
 from backend.billing import (
     BillingConfigurationError,
+    create_razorpay_plan,
     create_subscription,
     verify_webhook_signature,
 )
@@ -595,6 +607,92 @@ def create_plan(req: PlanCreateRequest, admin: AuthenticatedUser = Depends(requi
     return {"success": True, "plan_code": req.code}
 
 
+@app.post("/api/admin/plans/initialize-creator-tiers")
+def initialize_creator_tiers(admin: AuthenticatedUser = Depends(require_admin)):
+    """Create the approved monthly tiers in Razorpay test mode and Supabase."""
+    tiers = [
+        {
+            "code": "starter",
+            "name": "Starter",
+            "price_paise": 19900,
+            "videos_per_month": 10,
+            "max_duration_seconds": 60,
+            "scheduled_posts_per_month": 5,
+            "description": "Starter creator subscription: 10 videos per month, up to 60 seconds each.",
+        },
+        {
+            "code": "creator",
+            "name": "Creator",
+            "price_paise": 49900,
+            "videos_per_month": 30,
+            "max_duration_seconds": 180,
+            "scheduled_posts_per_month": 30,
+            "description": "Creator subscription: 30 videos per month, up to 180 seconds each.",
+        },
+        {
+            "code": "studio",
+            "name": "Studio",
+            "price_paise": 149900,
+            "videos_per_month": 100,
+            "max_duration_seconds": 600,
+            "scheduled_posts_per_month": 100,
+            "description": "Studio subscription: 100 videos per month, up to 600 seconds each.",
+        },
+    ]
+    created = []
+    existing = []
+    try:
+        for tier in tiers:
+            rows = store.select("subscription_plans", {"code": f"eq.{tier['code']}"})
+            if rows:
+                if rows[0].get("razorpay_plan_id"):
+                    existing.append(tier["code"])
+                    continue
+                app_plan = rows[0]
+            else:
+                app_plan = None
+
+            remote_plan = create_razorpay_plan(
+                name=f"StudioFlow {tier['name']} Monthly",
+                amount_paise=tier["price_paise"],
+                description=tier["description"],
+                test_mode=True,
+            )
+            if not remote_plan.get("id"):
+                raise RuntimeError(f"Razorpay returned no plan ID for {tier['code']}.")
+
+            if app_plan:
+                store.update(
+                    "subscription_plans",
+                    {"razorpay_plan_id": remote_plan["id"]},
+                    {"id": f"eq.{app_plan['id']}"},
+                )
+            else:
+                store.insert("subscription_plans", {
+                    "code": tier["code"],
+                    "name": tier["name"],
+                    "price_paise": tier["price_paise"],
+                    "currency": "INR",
+                    "interval_unit": "monthly",
+                    "razorpay_plan_id": remote_plan["id"],
+                    "videos_per_month": tier["videos_per_month"],
+                    "max_duration_seconds": tier["max_duration_seconds"],
+                    "scheduled_posts_per_month": tier["scheduled_posts_per_month"],
+                    "is_active": True,
+                })
+            created.append(tier["code"])
+            _write_audit_log("admin.test_plan_created", admin.id, "subscription_plan", tier["code"], {
+                "razorpay_plan_id": remote_plan["id"],
+                "price_paise": tier["price_paise"],
+            })
+    except BillingConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"success": True, "created": created, "already_configured": existing}
+
+
 def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
     """Background task to build video without blocking the API response"""
     out_dir = OUTPUT_DIR / local_id
@@ -604,7 +702,11 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
 
     def persist_progress(value: int, current_status: str = "building"):
         safe_value = max(0, min(100, int(value)))
-        payload = {"status": current_status, "progress_percent": safe_value}
+        payload = {
+            "status": current_status,
+            "progress_percent": safe_value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
         store.update("video_projects", payload, {"id": f"eq.{local_id}"})
         if meta_file.exists():
             try:
@@ -634,14 +736,25 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
         # Step 2: Assemble Video
         try:
             persist_progress(45)
+
+            last_render_progress = 45
+
+            def report_render_progress(fraction: float):
+                nonlocal last_render_progress
+                current = 45 + int(max(0.0, min(1.0, fraction)) * 45)
+                if current >= 90 or current - last_render_progress >= 3:
+                    persist_progress(current)
+                    last_render_progress = current
+
             build_video(
                 topic=req.topic,
                 title=req.title,
                 script_text=req.script,
                 narration_path=narration_file,
                 pexels_api_key=cfg.get("pexels_api_key", ""),
-                resolution=tuple(cfg.get("video", {}).get("resolution", [1080, 1920])),
+                resolution=_video_render_resolution(cfg),
                 out_path=video_file,
+                on_progress=report_render_progress,
             )
             # Validate video file was created successfully
             if not video_file.exists() or video_file.stat().st_size < 1000:
@@ -650,16 +763,9 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
             persist_progress(90)
         except Exception as e:
             print(f"[build] Video builder error: {e}")
-            # Build minimal valid color clip if custom builder failed
-            try:
-                from moviepy import ColorClip
-                fallback = ColorClip(size=tuple(cfg.get("video", {}).get("resolution", [1080, 1920])), color=(15, 23, 42), duration=10)
-                fallback.write_videofile(str(video_file), fps=24, codec="libx264", logger=None)
-                print(f"[build] Used fallback video generation")
-                persist_progress(90)
-            except Exception as fe:
-                print(f"[build] Fallback encoder error: {fe}")
-                raise
+            # Do not launch a second encoder after a render failure: if the
+            # first encoder ran out of memory, a fallback render can OOM too.
+            raise
 
         # Update meta.json with completion status
         if meta_file.exists():
@@ -671,7 +777,11 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
 
         # Update Database status
         video_status = "ready" if (video_file.exists() and video_file.stat().st_size > 1000) else "build_failed"
-        store.update("video_projects", {"status": video_status, "progress_percent": 100 if video_status == "ready" else 0}, {"id": f"eq.{local_id}"})
+        store.update("video_projects", {
+            "status": video_status,
+            "progress_percent": 100 if video_status == "ready" else 0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, {"id": f"eq.{local_id}"})
 
     except Exception as e:
         print(f"[build] Background task failed: {e}")
@@ -682,7 +792,13 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
             meta["progress_percent"] = 0
             meta_file.write_text(json.dumps(meta, indent=2))
 
-        store.update("video_projects", {"status": "build_failed", "progress_percent": 0}, {"id": f"eq.{local_id}"})
+        store.update("video_projects", {
+            "status": "build_failed",
+            "progress_percent": 0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, {"id": f"eq.{local_id}"})
+    finally:
+        _VIDEO_BUILD_SEMAPHORE.release()
 
 
 @app.post("/api/videos/build")
@@ -690,6 +806,8 @@ def build_video_endpoint(req: VideoBuildRequest, background_tasks: BackgroundTas
                          user: AuthenticatedUser = Depends(require_current_user)):
     _require_build_entitlement(user, req.duration_seconds)
     cfg = load_config()
+    if not _VIDEO_BUILD_SEMAPHORE.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="A video is already rendering on this server. Please wait for it to finish, then try again.")
     try:
         project = store.insert("video_projects", {
             "user_id": user.id,
@@ -704,12 +822,16 @@ def build_video_endpoint(req: VideoBuildRequest, background_tasks: BackgroundTas
             "privacy_status": cfg.get("upload", {}).get("default_privacy", "private"),
         })[0]
     except RuntimeError as exc:
+        _VIDEO_BUILD_SEMAPHORE.release()
         error_text = str(exc)
         if "PGRST204" in error_text and "progress_percent" in error_text:
             raise HTTPException(
                 status_code=503,
                 detail="Video progress is not enabled in Supabase yet. Apply supabase/migrations/202610110001_video_progress_percent.sql, then retry.",
             ) from exc
+        raise
+    except Exception:
+        _VIDEO_BUILD_SEMAPHORE.release()
         raise
     local_id = project["id"]
     out_dir = OUTPUT_DIR / local_id
@@ -726,10 +848,19 @@ def build_video_endpoint(req: VideoBuildRequest, background_tasks: BackgroundTas
         "requested_duration_seconds": req.duration_seconds,
         "created_at": datetime.utcnow().isoformat(),
     }
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
-
-    # Add video building as background task
-    background_tasks.add_task(_build_video_task, local_id, req, cfg)
+    try:
+        (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+        # Add video building as background task. The reserved semaphore is
+        # released by _build_video_task whether rendering succeeds or fails.
+        background_tasks.add_task(_build_video_task, local_id, req, cfg)
+    except Exception:
+        _VIDEO_BUILD_SEMAPHORE.release()
+        store.update("video_projects", {
+            "status": "build_failed",
+            "progress_percent": 0,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, {"id": f"eq.{local_id}"})
+        raise
 
     return {
         "success": True,
@@ -751,6 +882,25 @@ def list_videos(user: AuthenticatedUser = Depends(require_current_user)):
     for p in projects_db:
         local_id = p["id"]
         seen_ids.add(local_id)
+        failure_reason = None
+        if p.get("status") == "building":
+            updated_at = p.get("updated_at") or p.get("created_at")
+            try:
+                last_activity = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if updated_at else None
+                if last_activity and (datetime.now(timezone.utc) - last_activity).total_seconds() > _STALE_BUILD_SECONDS:
+                    p["status"] = "build_failed"
+                    p["progress_percent"] = 0
+                    failure_reason = "Rendering stopped reporting progress. The server may have restarted or the render may have run out of memory. Please retry with a shorter video."
+                    try:
+                        store.update("video_projects", {
+                            "status": "build_failed",
+                            "progress_percent": 0,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }, {"id": f"eq.{local_id}"})
+                    except Exception as exc:
+                        print(f"[build] Could not mark stale project {local_id} failed: {exc}")
+            except (TypeError, ValueError):
+                pass
         has_video = (OUTPUT_DIR / local_id / "video.mp4").exists()
         has_audio = (OUTPUT_DIR / local_id / "narration.mp3").exists()
         results.append({
@@ -759,6 +909,7 @@ def list_videos(user: AuthenticatedUser = Depends(require_current_user)):
             "topic": p["topic"], "title": p["title"], "description": p["description"],
             "script": p["script"], "voice": p["voice"], "status": p["status"],
             "progress_percent": p.get("progress_percent", 0),
+            "failure_reason": failure_reason,
             "youtube_video_id": p.get("youtube_video_id"), "privacy_status": p["privacy_status"],
             "has_video": has_video,
             "has_audio": has_audio,
