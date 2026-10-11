@@ -690,18 +690,27 @@ def build_video_endpoint(req: VideoBuildRequest, background_tasks: BackgroundTas
                          user: AuthenticatedUser = Depends(require_current_user)):
     _require_build_entitlement(user, req.duration_seconds)
     cfg = load_config()
-    project = store.insert("video_projects", {
-        "user_id": user.id,
-        "topic": req.topic,
-        "title": req.title,
-        "description": req.description,
-        "script": req.script,
-        "voice": req.voice or "en-US-GuyNeural",
-        "requested_duration_seconds": req.duration_seconds,
-        "status": "building",
-        "progress_percent": 0,
-        "privacy_status": cfg.get("upload", {}).get("default_privacy", "private"),
-    })[0]
+    try:
+        project = store.insert("video_projects", {
+            "user_id": user.id,
+            "topic": req.topic,
+            "title": req.title,
+            "description": req.description,
+            "script": req.script,
+            "voice": req.voice or "en-US-GuyNeural",
+            "requested_duration_seconds": req.duration_seconds,
+            "status": "building",
+            "progress_percent": 0,
+            "privacy_status": cfg.get("upload", {}).get("default_privacy", "private"),
+        })[0]
+    except RuntimeError as exc:
+        error_text = str(exc)
+        if "PGRST204" in error_text and "progress_percent" in error_text:
+            raise HTTPException(
+                status_code=503,
+                detail="Video progress is not enabled in Supabase yet. Apply supabase/migrations/202610110001_video_progress_percent.sql, then retry.",
+            ) from exc
+        raise
     local_id = project["id"]
     out_dir = OUTPUT_DIR / local_id
     out_dir.mkdir(parents=True, exist_ok=True)

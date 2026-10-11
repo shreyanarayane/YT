@@ -17,5 +17,6 @@ service-role key only on the server for database writes; never place that key
 in React or any browser build. The root `.env` is for local development only.
 
 Apply the SQL files in `supabase/migrations/` through the Supabase SQL Editor
-before deploying. New customer data is stored through Supabase PostgREST;
+in order before deploying. For an existing database, run each new migration
+even if an earlier schema file has already been applied. New customer data is stored through Supabase PostgREST;
 SQLite is not part of the application data path.
