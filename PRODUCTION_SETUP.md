@@ -61,7 +61,7 @@ the application and are not migrated automatically.
 - **Render backend:** use the repository root as the service root. Build with
   `pip install -r backend/requirements.txt` and start with
   `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`. Set the Render health
-  check path to `/health`.
+  check path to `/health` (the API also answers `HEAD /` for platform probes).
 - **Vercel frontend:** set the project root directory to `frontend`, framework
   preset to Vite, install command to `npm ci`, build command to `npm run build`,
   and output directory to `dist`. Add `API_BASE_URL` (your Render API URL),

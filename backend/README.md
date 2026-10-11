@@ -8,7 +8,7 @@ imported as the `backend` Python package. Use:
 
 - Build command: `pip install -r backend/requirements.txt`
 - Start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
-- Health check path: `/health`
+- Health check path: `/health` (preferred). `HEAD /` is also accepted for platform probes.
 
 Configure secrets and settings in Render's environment panel. At minimum,
 provide `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_ENV=production`,

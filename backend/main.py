@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -234,6 +234,12 @@ def root():
         "timestamp": datetime.utcnow().isoformat(),
         "database": store.database_status(),
     }
+
+
+@app.head("/")
+def root_head():
+    """Keep platform health probes using HEAD / from receiving a 405."""
+    return Response(status_code=200)
 
 
 @app.get("/health")
