@@ -57,6 +57,7 @@ create table if not exists public.video_projects (
   voice text not null default 'en-US-GuyNeural',
   requested_duration_seconds integer,
   status text not null default 'draft',
+  progress_percent integer not null default 0 check (progress_percent between 0 and 100),
   youtube_video_id text,
   privacy_status text not null default 'private',
   media_path text,

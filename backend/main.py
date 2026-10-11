@@ -564,22 +564,40 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
     out_dir = OUTPUT_DIR / local_id
     narration_file = out_dir / "narration.mp3"
     video_file = out_dir / "video.mp4"
+    meta_file = out_dir / "meta.json"
+
+    def persist_progress(value: int, current_status: str = "building"):
+        safe_value = max(0, min(100, int(value)))
+        payload = {"status": current_status, "progress_percent": safe_value}
+        store.update("video_projects", payload, {"id": f"eq.{local_id}"})
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text())
+                meta["status"] = current_status
+                meta["progress_percent"] = safe_value
+                meta_file.write_text(json.dumps(meta, indent=2))
+            except Exception:
+                pass
 
     try:
         # Step 1: Synthesize voiceover using edge-tts
         try:
+            persist_progress(10)
             synthesize_voiceover(req.script, req.voice, narration_file)
             # Validate audio file was created successfully
             if not narration_file.exists() or narration_file.stat().st_size < 100:
                 raise ValueError(f"Audio file invalid or too small: {narration_file.stat().st_size if narration_file.exists() else 0} bytes")
             print(f"[build] TTS completed: {narration_file.stat().st_size} bytes")
+            persist_progress(35)
         except Exception as e:
             print(f"[build] TTS fallback due to: {e}")
             narration_file.write_text("audio sample placeholder")
             print(f"[build] Used dummy audio - video will be silent")
+            persist_progress(35)
 
         # Step 2: Assemble Video
         try:
+            persist_progress(45)
             build_video(
                 topic=req.topic,
                 title=req.title,
@@ -593,6 +611,7 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
             if not video_file.exists() or video_file.stat().st_size < 1000:
                 raise ValueError(f"Video file invalid or too small: {video_file.stat().st_size if video_file.exists() else 0} bytes")
             print(f"[build] Video completed: {video_file.stat().st_size} bytes")
+            persist_progress(90)
         except Exception as e:
             print(f"[build] Video builder error: {e}")
             # Build minimal valid color clip if custom builder failed
@@ -601,32 +620,33 @@ def _build_video_task(local_id: str, req: VideoBuildRequest, cfg: dict):
                 fallback = ColorClip(size=tuple(cfg.get("video", {}).get("resolution", [1080, 1920])), color=(15, 23, 42), duration=10)
                 fallback.write_videofile(str(video_file), fps=24, codec="libx264", logger=None)
                 print(f"[build] Used fallback video generation")
+                persist_progress(90)
             except Exception as fe:
                 print(f"[build] Fallback encoder error: {fe}")
                 raise
 
         # Update meta.json with completion status
-        meta_file = out_dir / "meta.json"
         if meta_file.exists():
             meta = json.loads(meta_file.read_text())
             video_status = "ready" if (video_file.exists() and video_file.stat().st_size > 1000) else "build_failed"
             meta["status"] = video_status
+            meta["progress_percent"] = 100 if video_status == "ready" else 0
             meta_file.write_text(json.dumps(meta, indent=2))
 
         # Update Database status
         video_status = "ready" if (video_file.exists() and video_file.stat().st_size > 1000) else "build_failed"
-        store.update("video_projects", {"status": video_status}, {"id": f"eq.{local_id}"})
+        store.update("video_projects", {"status": video_status, "progress_percent": 100 if video_status == "ready" else 0}, {"id": f"eq.{local_id}"})
 
     except Exception as e:
         print(f"[build] Background task failed: {e}")
         # Update status to failed
-        meta_file = out_dir / "meta.json"
         if meta_file.exists():
             meta = json.loads(meta_file.read_text())
             meta["status"] = "build_failed"
+            meta["progress_percent"] = 0
             meta_file.write_text(json.dumps(meta, indent=2))
 
-        store.update("video_projects", {"status": "build_failed"}, {"id": f"eq.{local_id}"})
+        store.update("video_projects", {"status": "build_failed", "progress_percent": 0}, {"id": f"eq.{local_id}"})
 
 
 @app.post("/api/videos/build")
@@ -643,6 +663,7 @@ def build_video_endpoint(req: VideoBuildRequest, background_tasks: BackgroundTas
         "voice": req.voice or "en-US-GuyNeural",
         "requested_duration_seconds": req.duration_seconds,
         "status": "building",
+        "progress_percent": 0,
         "privacy_status": cfg.get("upload", {}).get("default_privacy", "private"),
     })[0]
     local_id = project["id"]
@@ -656,6 +677,7 @@ def build_video_endpoint(req: VideoBuildRequest, background_tasks: BackgroundTas
         "script": req.script,
         "voice": req.voice,
         "status": "building",  # Changed to "building" to indicate in-progress
+        "progress_percent": 0,
         "requested_duration_seconds": req.duration_seconds,
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -691,6 +713,7 @@ def list_videos(user: AuthenticatedUser = Depends(require_current_user)):
             "local_id": local_id,
             "topic": p["topic"], "title": p["title"], "description": p["description"],
             "script": p["script"], "voice": p["voice"], "status": p["status"],
+            "progress_percent": p.get("progress_percent", 0),
             "youtube_video_id": p.get("youtube_video_id"), "privacy_status": p["privacy_status"],
             "has_video": has_video,
             "has_audio": has_audio,
